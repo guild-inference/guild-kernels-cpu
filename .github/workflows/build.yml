@@ -1,0 +1,23 @@
+name: independent-build
+on: [push, pull_request, workflow_dispatch]
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: guild-inference/Guild
+          ref: 4b4ded0
+          path: sdk-source
+      - run: cmake -S sdk-source/sdk -B sdk-build -DCMAKE_INSTALL_PREFIX=$RUNNER_TEMP/guild-sdk && cmake --install sdk-build
+      - run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH=$RUNNER_TEMP/guild-sdk && cmake --build build -j2
+      - run: ctest --test-dir build --output-on-failure
+      - run: cmake --install build --prefix "$PWD/build/package"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cpu-unsigned-staging
+          path: build/package/
+          include-hidden-files: true

@@ -1,0 +1,92 @@
+[
+  {
+    "source": "src/kernels/cpu/expert.cpp",
+    "revision": "42018db2e63e7febbdb7bcf58a6392166518cdc1",
+    "sha256": "0c200faa7f04eaa247eb253c77d49f4f2bef60c29e527d10189b26c91d1d0ade"
+  },
+  {
+    "source": "src/kernels/cpu/features.cpp",
+    "revision": "42018db2e63e7febbdb7bcf58a6392166518cdc1",
+    "sha256": "1acd02e2b8bfd3722d82b37d358478be45a708177fb9d991d71a21535ba6e66b"
+  },
+  {
+    "source": "src/kernels/cpu/q2_avx2.cpp",
+    "revision": "42018db2e63e7febbdb7bcf58a6392166518cdc1",
+    "sha256": "00c805d9852fef8ed30c0ab7f84c0ee98d20a5c53f6a4f0ffb3f76a8a7a50ea2"
+  },
+  {
+    "source": "src/kernels/cpu/native_expert.cpp",
+    "revision": "42018db2e63e7febbdb7bcf58a6392166518cdc1",
+    "sha256": "a1ce70623b1db1e80343e85995d32ed9bb56e88c900c61e903be2d3012fca57f"
+  },
+  {
+    "source": "src/kernels/cpu/iq_avx512.cpp",
+    "revision": "42018db2e63e7febbdb7bcf58a6392166518cdc1",
+    "sha256": "aaeca2e3758d43372607bd4649f1c24fb9b0c0a3363ff43f4706dc0a97b47949"
+  },
+  {
+    "source": "src/kernels/cpu/iq_avx2.cpp",
+    "revision": "42018db2e63e7febbdb7bcf58a6392166518cdc1",
+    "sha256": "57e8d9b685508ba5b43ea3fe9e559c8b72f5a9ac841e9c7a713a2bfd0b1fd672"
+  },
+  {
+    "source": "src/kernels/cpu/kq_avx2.cpp",
+    "revision": "42018db2e63e7febbdb7bcf58a6392166518cdc1",
+    "sha256": "d94dd553a667802432adae1e3b411c04d623e7928f903fdf42b5570d7e15dcaa"
+  },
+  {
+    "source": "src/kernels/cpu/kq_avx1.cpp",
+    "revision": "42018db2e63e7febbdb7bcf58a6392166518cdc1",
+    "sha256": "b9a55be69d1f80ba4145714d14e8c98d116148eaef205fea459d3603f1203978"
+  },
+  {
+    "source": "include/guild/kernels/cpu/expert.hpp",
+    "revision": "42018db2e63e7febbdb7bcf58a6392166518cdc1",
+    "sha256": "784bbd9f992b5bbed1c47b776d45900499f49848581191c43cdefc97f03267c5"
+  },
+  {
+    "source": "include/guild/kernels/cpu/native_expert.hpp",
+    "revision": "42018db2e63e7febbdb7bcf58a6392166518cdc1",
+    "sha256": "037a5fdbee09a66c502b540aefb52e75d422321be943e1a2f4dddd7651cdec66"
+  },
+  {
+    "source": "include/guild/kernels/cpu/expert_layout.hpp",
+    "revision": "42018db2e63e7febbdb7bcf58a6392166518cdc1",
+    "sha256": "36b80a7026184a3abd2c9236fbf1a958a75dc2ca244b446072ec9ccd51f9564a"
+  },
+  {
+    "source": "include/guild/kernels/cpu/iq_avx512.hpp",
+    "revision": "42018db2e63e7febbdb7bcf58a6392166518cdc1",
+    "sha256": "e2d71d91b938cebe5e498ec5f52f71b59b35e69ef50b17299c489d2c92782bd7"
+  },
+  {
+    "source": "include/guild/kernels/cpu/iq_avx2.hpp",
+    "revision": "42018db2e63e7febbdb7bcf58a6392166518cdc1",
+    "sha256": "6e319980c58097ed5df2ff3c5e8f03f7bc49e3d52e164c5553987e5243b0682c"
+  },
+  {
+    "source": "include/guild/kernels/cpu/kq_avx2.hpp",
+    "revision": "42018db2e63e7febbdb7bcf58a6392166518cdc1",
+    "sha256": "c7efa636ee4ca7114c2f2fd7b6e6c84d855eeca534733a974a07b66093315327"
+  },
+  {
+    "source": "include/guild/kernels/cpu/kq_avx1.hpp",
+    "revision": "42018db2e63e7febbdb7bcf58a6392166518cdc1",
+    "sha256": "9020c58e2a94ee3286236b33b18940b478ce7de780b4520a5e74805f5828f32e"
+  },
+  {
+    "source": "third_party/ggml/ggml-common.h",
+    "revision": "42018db2e63e7febbdb7bcf58a6392166518cdc1",
+    "sha256": "0061131b615c5721fc88a78feeb22c1f8c450f1c2646a317d80796a653bf595c"
+  },
+  {
+    "source": "third_party/ggml/LICENSE",
+    "revision": "42018db2e63e7febbdb7bcf58a6392166518cdc1",
+    "sha256": "94f29bbed6a22c35b992c5c6ebf0e7c92f13b836b90f36f461c9cf2f0f1d010d"
+  },
+  {
+    "source": "LICENSE",
+    "revision": "42018db2e63e7febbdb7bcf58a6392166518cdc1",
+    "sha256": "ba12c6c4859925c6cb1c1a63c0d81e1e072afb8806ba254d1b2ba6ce4da60d0d"
+  }
+]

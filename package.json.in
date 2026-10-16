@@ -1,0 +1,9 @@
+{
+  "format_version":1,"package_kind":"gkernel","package_id":"org.guild.kernels.cpu",
+  "publisher_id":"org.guild-inference","scope":"cpu-kernels","version":"@PROJECT_VERSION@",
+  "kernel_abi":{"major":1,"minor_min":0,"minor_max":0},"backends":["cpu"],
+  "required_cpu_isa":@CPU_REQUIRED_ISA@,
+  "library_path":"lib/libguild_cpu_plugin.so","provided_ops":["external.cpu.native_expert.v1"],
+  "artifacts":[{"path":"lib/libguild_cpu_plugin.so","role":"shared_library","byte_size":0,"sha256":"0000000000000000000000000000000000000000000000000000000000000000"}],
+  "provenance":{"spdx_license":"MIT","source_repo":"https://github.com/guild-inference/guild-kernels-cpu","source_revision":"@PACKAGE_SOURCE_REVISION@"}
+}
