@@ -35,4 +35,22 @@ int main() {
     for(int r=0;r<256;++r){float g=0,u=0;dot(256,&g,0,blob.data()+r*f.gu_row,0,acts[0],0,1);
         dot(256,&u,0,blob.data()+f.up_off+r*f.gu_row,0,acts[0],0,1);reference[r]=(g/(1.f+std::exp(-g)))*u;}
     CHECK(std::memcmp(y.data(),reference.data(),y.size()*sizeof(float))==0);
+    // Preserve the independently checked per-token GGML dot order at the
+    // optimized multi-token dispatch boundaries, including NT=4/8 variants.
+    for(int nt:{2,3,4,8}) {
+        std::vector<std::vector<uint8_t>> activations(nt,std::vector<uint8_t>(f.act_bytes));
+        std::vector<std::vector<float>> outputs(nt,std::vector<float>(256));
+        std::vector<const void*> inputs(nt);std::vector<float*> destinations(nt);
+        for(int t=0;t<nt;++t){
+            for(size_t i=0;i<x.size();++i)x[i]=std::cos(float(i)*.1f+float(t)*.37f);
+            table.quant_act(&f,x.data(),activations[t].data());inputs[t]=activations[t].data();destinations[t]=outputs[t].data();
+        }
+        table.gate_up(&f,blob.data(),inputs.data(),nt,destinations.data(),0,256);
+        for(int t=0;t<nt;++t)for(int r=0;r<256;++r){float g=0,u=0;
+            dot(256,&g,0,blob.data()+r*f.gu_row,0,inputs[t],0,1);
+            dot(256,&u,0,blob.data()+f.up_off+r*f.gu_row,0,inputs[t],0,1);
+            const float expected=(g/(1.f+std::exp(-g)))*u;
+            CHECK(std::memcmp(&outputs[t][r],&expected,sizeof(expected))==0);
+        }
+    }
 }

@@ -83,6 +83,7 @@ struct CpuFeatures {
     bool avx512_vnni = false;
     bool avx512_vbmi = false;
     bool fma = false, f16c = false, os_avx512 = false;
+    bool bmi2 = false, avx512cd = false;
     bool usable() const {
         return avx512f && avx512bw && avx512dq && avx512vl && avx512_vnni && avx512_vbmi &&
                fma && f16c && os_avx512;

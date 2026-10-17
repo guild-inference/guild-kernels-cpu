@@ -37,11 +37,12 @@ ctest --test-dir build --output-on-failure
 cmake --install build --prefix "$PWD/build/package"
 ```
 
-The portable package has an AVX2/FMA/F16C baseline, verified before registration.
+The portable package has an AVX2/FMA/F16C/BMI2 baseline, verified before registration.
 SIMD flags apply only to the specialized translation units. Do not apply global
 `-march=native` to a distributable plugin. For the explicit AVX-512 GGML arithmetic
 configuration used in the Xeon integration measurements, configure with
-`-DGUILD_CPU_GGML_AVX512=ON`; its manifest also requires AVX512F/BW/DQ/VL.
+`-DGUILD_CPU_GGML_AVX512=ON`; its manifest also requires AVX512F/BW/DQ/VL/CD.
+Registration checks these capabilities before initializing that GGML variant.
 Build the variants as different releases/stores; never replace different bytes
 under a previously distributed package/version identity.
 

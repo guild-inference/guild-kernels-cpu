@@ -48,6 +48,8 @@ CpuFeatures cpu_features() {
         f.os_avx512 = (xcr0 & 0xE6) == 0xE6; // SSE, YMM, opmask and ZMM state
     }
     cpuid(7, 0, r);
+    f.bmi2 = (r[1] >> 8) & 1u;
+    f.avx512cd = (r[1] >> 28) & 1u;
     f.avx512f = (r[1] >> 16) & 1u;
     f.avx512dq = (r[1] >> 17) & 1u;
     f.avx512bw = (r[1] >> 30) & 1u;

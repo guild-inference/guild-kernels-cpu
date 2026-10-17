@@ -44,6 +44,7 @@ bool cpu_avx512_ok() {
 bool cpu_avx512bw_ok() {
     static const bool ok = [] {
         if (const char* f = std::getenv("GUILD_FORCE_AVX2"); f != nullptr && f[0] == '1') return false;
+        if (cpu_isa_cap() < 3) return false;
         unsigned r[4] = {0, 0, 0, 0};
         auto cpuid = [&](unsigned leaf, unsigned sub) {
 #if defined(_MSC_VER)

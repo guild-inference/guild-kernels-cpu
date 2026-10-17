@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.24)
-set(GUILD_PACKAGE_VERSION "1.1.0" CACHE STRING "Semantic package release version")
+set(GUILD_PACKAGE_VERSION "1.1.1" CACHE STRING "Semantic package release version")
 project(guild_kernels_cpu VERSION ${GUILD_PACKAGE_VERSION} LANGUAGES C CXX)
 execute_process(COMMAND git rev-parse HEAD WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
   OUTPUT_VARIABLE PACKAGE_SOURCE_REVISION OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
@@ -23,9 +23,9 @@ foreach(feature AVX512 AVX512_VBMI AVX512_VNNI AVX_VNNI AVX512_BF16 AMX_TILE AMX
 endforeach()
 if(GUILD_CPU_GGML_AVX512)
   set(GGML_AVX512 ON CACHE BOOL "" FORCE)
-  set(CPU_REQUIRED_ISA 988)
+  set(CPU_REQUIRED_ISA 5116) # AVX2/FMA/F16C/BMI2 + AVX512F/BW/DQ/VL/CD
 else()
-  set(CPU_REQUIRED_ISA 28)
+  set(CPU_REQUIRED_ISA 60) # GGML is also compiled with BMI2
 endif()
 configure_file(package.json.in ${CMAKE_CURRENT_BINARY_DIR}/package.json @ONLY)
 FetchContent_Declare(llama GIT_REPOSITORY https://github.com/ggml-org/llama.cpp.git

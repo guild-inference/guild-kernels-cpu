@@ -18,6 +18,12 @@ const guild_cpu_expert_ext_v1_t table={sizeof(table),GUILD_CPU_EXPERT_TAG_V1,1,
 };
 guild_status_t init(guild_core_host_t host,const guild_host_api_v1_t* api,guild_error_info_t* err) {
     if(!api || api->struct_size<sizeof(*api) || !cpu::cpu_avx2_ok()) return GUILD_STATUS_ERR_UNSUPPORTED_HARDWARE;
+    const auto features=cpu::cpu_features();
+    if((CPU_REQUIRED_ISA & GUILD_ISA_BMI2) && !features.bmi2)return GUILD_STATUS_ERR_UNSUPPORTED_HARDWARE;
+    if((CPU_REQUIRED_ISA & GUILD_ISA_AVX512F) &&
+       !(features.os_avx512 && features.avx512f && features.avx512bw && features.avx512dq && features.avx512vl))
+        return GUILD_STATUS_ERR_UNSUPPORTED_HARDWARE;
+    if((CPU_REQUIRED_ISA & (1ull<<12)) && !features.avx512cd)return GUILD_STATUS_ERR_UNSUPPORTED_HARDWARE;
     // This DSO owns an isolated GGML instance. Core's initialized conversion
     // tables are not shared with it; initialize before publishing any callbacks.
     ggml_cpu_init();
