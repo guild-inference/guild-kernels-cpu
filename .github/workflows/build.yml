@@ -15,6 +15,12 @@ jobs:
       - run: cmake -S sdk-source/sdk -B sdk-build -DCMAKE_INSTALL_PREFIX=$RUNNER_TEMP/guild-sdk && cmake --install sdk-build
       - run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH=$RUNNER_TEMP/guild-sdk && cmake --build build -j2
       - run: ctest --test-dir build --output-on-failure
+      - name: Emulated AVX2 baseline (not real-device performance testing)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y qemu-user
+          qemu-x86_64 -cpu Haswell build/full_backend_test
+          qemu-x86_64 -cpu Haswell build/cpu_contract_test
       - run: cmake --install build --prefix "$PWD/build/package"
       - uses: actions/upload-artifact@v4
         with:
