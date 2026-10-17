@@ -1,5 +1,5 @@
 // src/kernels/cpu/expert_layout.cpp - plan v0.3 P6: the per-layer expert table.  See the header.
-#include "guild/kernels/cpu/expert_layout.hpp"
+#include "guild/kernels/cpu/features.hpp"
 #include "guild/kernels/cpu/expert.hpp"
 
 #include <cstdio>
@@ -16,12 +16,6 @@
 #include <sstream>
 
 namespace guild::kernels::cpu {
-namespace {
-ExpertLayout g_layout;
-}
-
-const ExpertLayout& expert_layout() { return g_layout; }
-
 int cpu_isa_cap() {
     // GUILD_FORCE_ISA (tests, the experimental older-CPU builds): the engine's own dispatch acts as if this CPU
     // stopped at that level.  ggml-cpu is not affected: it runs what the build compiled it for.
@@ -186,6 +180,7 @@ std::string cpu_name() {
     return b0 == std::string::npos ? std::string("unknown") : name.substr(b0, b1 - b0 + 1);
 }
 
+#if !defined(GUILD_CPU_PROBE_ONLY)
 void q2_rows_any(const uint8_t* w, size_t row_bytes, int nblocks, const ActQ* const* a, int nt, float* const* out,
                  int r0, int r1) {
     if (cpu_avx512_ok()) q2_0_gguf_rows_multi(w, row_bytes, nblocks, a, nt, out, r0, r1);
@@ -196,6 +191,7 @@ void act_quant_any(const float* x, int n, ActQ& a) {
     if (cpu_avx512_ok()) act_quant_q8_1(x, n, a);
     else act_quant_q8_1_avx2(x, n, a);
 }
+#endif
 
 
 } // namespace guild::kernels::cpu

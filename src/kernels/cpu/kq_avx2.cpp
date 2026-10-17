@@ -12,7 +12,7 @@
 //
 // The gain is the weight-side work and the weight bytes, read once per verify window instead of once per token.
 #include "guild/kernels/cpu/kq_avx2.hpp"
-#include "guild/kernels/cpu/expert_layout.hpp"
+#include "guild/kernels/cpu/features.hpp"
 
 #define GGML_COMMON_DECL_CPP
 #define GGML_COMMON_IMPL_CPP

@@ -6,7 +6,7 @@
 #include "guild/kernels/cpu/iq_avx512.hpp"
 #include "guild/kernels/cpu/iq_avx2.hpp"
 #include "guild/kernels/cpu/kq_avx2.hpp"
-#include "guild/kernels/cpu/expert_layout.hpp"
+#include "guild/kernels/cpu/features.hpp"
 
 #include "ggml.h"
 #include "ggml-cpu.h"

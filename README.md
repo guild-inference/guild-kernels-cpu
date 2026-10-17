@@ -1,21 +1,32 @@
 # guild-kernels-cpu (Phase 2 migration preview)
 
-Independent native expert arithmetic: quantized activation conversion,
+Independent CPU arithmetic: quantized activation conversion,
 gate/up SwiGLU rows and down rows; AVX2 / AVX-512 multi-token implementations
 and pinned GGML CPU single-token arithmetic. Package `org.guild.kernels.cpu`
-exports `external.cpu.native_expert.v1` through SDK 1.1's `CPE1` C contract.
+exports `external.cpu.native_expert.v1` through SDK 1.3's append-only `CPE1`/CPU
+backend v2 C contract. Version 1.1 adds canonical planar Q2, native Q2 row
+dispatch, BF16 router arithmetic, ordered expert combination, SwiGLU and format
+metadata callbacks. The canonical activation layout is frozen in the C SDK.
 Core retains NUMA worker scheduling, expert residency and memory policy.
 
 This package has executed real Ornith inference with external Qwen and CUDA
 router packages together, with bitwise logits, tokens and tested state parity.
-The native arithmetic fallback can be compiled out of Core using
-`GUILD_BUILTIN_NATIVE_CPU=OFF`. This is **not the complete CPU extraction**:
-Core still owns canonical planar Q2 arithmetic, router lookahead, format/pack
-interpretation and other CPU operations. Those remain migration work.
+All bundled CPU arithmetic can be compiled out of Core using
+`GUILD_BUILTIN_CPU=OFF`; real Ornith inference has passed with that configuration.
+Core's CPU archive then contains its worker/pack code, baseline feature probes
+and fail-closed legacy stubs, not the arithmetic translation units. Canonical Q2
+and routing have independent public-contract oracle tests. A complete real
+canonical-planar-Q2 model fixture remains unavailable; that model-specific gate
+is not counted as passed.
+
+Bundled builds use `cmake/GuildCPUSources.cmake` from a pinned revision of this
+repository. The same source and per-file ISA rules build the static baseline and
+the DSO, replacing the temporary duplicate Core copies. Core retains pack/file
+interpretation, work scheduling, memory ownership, and numerical safety checks.
 
 ## Independent build
 
-Needs an installed Guild Kernel SDK 1.1, CMake 3.24+, C/C++17 compiler and Git.
+Needs an installed Guild Kernel SDK 1.3, CMake 3.24+, C/C++17 compiler and Git.
 GGML is fetched independently at immutable llama.cpp revision
 `3cf03257f219afbe7334045ff7c6a06ac68c627d`.
 
@@ -56,12 +67,16 @@ a real-model parity failure during extraction, despite synthetic arithmetic test
 
 ## Attribution and remaining gates
 
-Arithmetic sources were exported from Guild `42018db` with the explicit mapping
-in `SOURCE_PROVENANCE.json`. The format header uses SDK's C representation.
+Arithmetic sources were exported from Guild `42018db` with the initial mapping
+and initial-snapshot hashes in `SOURCE_PROVENANCE.json`; these hashes are source
+provenance, not a claim that later files are unchanged. The format and canonical
+activation headers now use SDK C representations. Feature probes are separated
+from pack policy and can build without any arithmetic sources.
 `LICENSE` preserves Guild and Strata MIT notices; `third_party/ggml/LICENSE`
 preserves GGML attribution. GGML remains private to the plugin (`-Bsymbolic` on
 Linux). No STL objects cross its binary boundary.
 
-Linux x86-64 is the tested platform. Windows release packaging and complete
-canonical-Q2 execution are not verified. The retained Core copies are migration
-references, not evidence that the remaining CPU extraction is finished.
+Linux x86-64 is the tested platform. Windows release packaging, the experimental
+SYCL consumer, and full real canonical-Q2 model inference are not verified.
+Production release signing/automation is a separate gate from the test-signed
+integration packages.
