@@ -36,6 +36,9 @@ void native_quant_h(const NativeFmt& f, const float* h, void* dst);
 void native_gu_rows(const NativeFmt& f, const uint8_t* blob, const void* const* act, int nt, float* const* ff,
                     int r0, int r1);
 /// out[t][r] = down_r . hq[t] for rows r in [r0, r1).
+/// Whether native_gu_rows on this CPU computes repacked IQ3_S rows (iq_avx2.hpp, kIq3sNl4Type) bitwise as it
+/// computes the IQ3_S rows themselves, so a host may repack them.
+bool iq3s_nl4_exact() noexcept;
 void native_down_rows(const NativeFmt& f, const uint8_t* blob, const void* const* hq, int nt, float* const* out,
                       int r0, int r1);
 

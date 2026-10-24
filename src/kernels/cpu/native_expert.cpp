@@ -103,6 +103,12 @@ void native_gu_rows(const NativeFmt& f, const uint8_t* blob, const void* const* 
         const char* v = std::getenv("GUILD_KQ256");
         return cpu_avx2_ok() && (v == nullptr || std::atoi(v) != 0);
     }();
+    // IQ3_S rows the host repacked (iq_avx2.hpp): the kernel IQ3_S would have taken, with its rounding - iq256 from
+    // mt_min tokens, ggml-cpu's single-token dot below that.  iq3s_nl4_exact() says when the host may repack.
+    if (f.gu_type == kIq3sNl4Type) {
+        iq3s_nl4_gu_rows(blob, f.gu_row, f.up_off, (int) f.n_embd, act, nt, ff, r0, r1, nt < mt_min || !avx2);
+        return;
+    }
     if (kq && (f.gu_type == 12 || f.gu_type == 14) && nt >= 2) {
         kq256_gu_rows(f.gu_type, blob, f.gu_row, f.up_off, (int) f.n_embd, act, nt, ff, r0, r1);
         return;
@@ -137,6 +143,13 @@ void native_gu_rows(const NativeFmt& f, const uint8_t* blob, const void* const* 
             ff[t][r] = (g / (1.f + std::exp(-g))) * u;
         }
     }
+}
+
+bool iq3s_nl4_exact() noexcept {
+    // The repacked kernel is AVX-2 and reproduces iq256 and ggml-cpu's AVX-2 dot.  A CPU that passes
+    // cpu_avx512_ok() takes iq512 for IQ3_S (another rounding), or ggml-cpu for every group with GUILD_NO_IQ512,
+    // so it keeps IQ3_S.
+    return cpu_avx2_ok() && !cpu_avx512_ok();
 }
 
 void native_down_rows(const NativeFmt& f, const uint8_t* blob, const void* const* hq, int nt, float* const* out,

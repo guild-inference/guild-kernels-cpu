@@ -405,7 +405,134 @@ void dot_rows_nt(int nt, const uint8_t* w, size_t row_bytes, int n, const void* 
     }
 }
 
+// ---- IQ3_S repacked (iq_avx2.hpp, kIq3sNl4Type).  The integer per-lane sums are those of row_dot<21> and of
+// ggml's ggml_vec_dot_iq3_s_q8_K (both put bytes 4l..4l+3 of each 32-value half in int32 lane l, and integers
+// add exactly), and the float steps are theirs: one fmadd of d * y.d per block, then one of the two 8-lane sums.
+inline float hsum_ggml(__m256 x) {   // ggml-cpu's hsum_float_8 (arch/x86/quants.c)
+    __m128 res = _mm256_extractf128_ps(x, 1);
+    res = _mm_add_ps(res, _mm256_castps256_ps128(x));
+    res = _mm_add_ps(res, _mm_movehl_ps(res, res));
+    res = _mm_add_ss(res, _mm_movehdup_ps(res));
+    return _mm_cvtss_f32(res);
+}
+
+template <int NT, bool GGML>
+inline void nl4_row_dot(const uint8_t* row, int nblocks, const block_q8_K* const* y, float* res) {
+    // code c -> |2c - 15| (the maddubs operand) and its sign, applied to the activation
+    const __m256i lut_abs = _mm256_setr_epi8(15, 13, 11, 9, 7, 5, 3, 1, 1, 3, 5, 7, 9, 11, 13, 15,
+                                             15, 13, 11, 9, 7, 5, 3, 1, 1, 3, 5, 7, 9, 11, 13, 15);
+    const __m256i lut_sgn = _mm256_setr_epi8(-1, -1, -1, -1, -1, -1, -1, -1, 1, 1, 1, 1, 1, 1, 1, 1,
+                                             -1, -1, -1, -1, -1, -1, -1, -1, 1, 1, 1, 1, 1, 1, 1, 1);
+    const __m256i m4 = _mm256_set1_epi8(0x0f);
+    __m256 accf[NT];
+    for (int t = 0; t < NT; ++t) accf[t] = _mm256_setzero_ps();
+    for (int i = 0; i < nblocks; ++i) {
+        const uint8_t* blk = row + (size_t) i * kIq3sNl4Block;
+        rows_ahead(blk + prefetch_ahead);
+        __m256i acci[NT];
+        for (int t = 0; t < NT; ++t) acci[t] = _mm256_setzero_si256();
+        for (int j = 0; j < 4; ++j) {
+            const __m256i bits = _mm256_loadu_si256((const __m256i*) (blk + 6 + 32 * j));
+            const uint8_t s = blk[2 + j];
+            for (int half = 0; half < 2; ++half) {
+                const __m256i c = half ? _mm256_and_si256(_mm256_srli_epi16(bits, 4), m4) : _mm256_and_si256(bits, m4);
+                const __m256i g = _mm256_shuffle_epi8(lut_abs, c), sgn = _mm256_shuffle_epi8(lut_sgn, c);
+                const __m256i sc = sc32(half ? 2 * (s >> 4) + 1 : 2 * (s & 15) + 1);
+                const int off = 64 * j + 32 * half;
+                for (int t = 0; t < NT; ++t) {
+                    const __m256i yv = _mm256_loadu_si256((const __m256i*) (y[t][i].qs + off));
+                    const __m256i ys = _mm256_sign_epi8(yv, sgn);
+                    acci[t] = _mm256_add_epi32(acci[t], _mm256_madd_epi16(_mm256_maddubs_epi16(g, ys), sc));
+                }
+            }
+        }
+        const float dx = h2f(u16(blk));
+        for (int t = 0; t < NT; ++t)
+            accf[t] = _mm256_fmadd_ps(_mm256_set1_ps(dx * y[t][i].d), _mm256_cvtepi32_ps(acci[t]), accf[t]);
+    }
+    for (int t = 0; t < NT; ++t) res[t] = GGML ? hsum_ggml(accf[t]) : hsum8(accf[t]);
+}
+
+template <int NT, bool GGML>
+void nl4_gu_rows(const uint8_t* blob, size_t gu_row, size_t up_off, int n, const void* const* act, float* const* ff,
+                 int r0, int r1) {
+    const block_q8_K* y[NT];
+    for (int t = 0; t < NT; ++t) y[t] = (const block_q8_K*) act[t];
+    const int nb = n / QK_K;
+    float g[NT], u[NT];
+    for (int r = r0; r < r1; ++r) {
+        nl4_row_dot<NT, GGML>(blob + (size_t) r * gu_row, nb, y, g);
+        nl4_row_dot<NT, GGML>(blob + up_off + (size_t) r * gu_row, nb, y, u);
+        for (int t = 0; t < NT; ++t) ff[t][r] = (g[t] / (1.f + std::exp(-g[t]))) * u[t];
+    }
+}
+
+template <bool GGML>
+void nl4_gu_rows_nt(int nt, const uint8_t* blob, size_t gu_row, size_t up_off, int n, const void* const* act,
+                    float* const* ff, int r0, int r1) {
+    for (int t0 = 0; t0 < nt; t0 += 4) {
+        const int k = nt - t0 < 4 ? nt - t0 : 4;
+        switch (k) {
+            case 1: nl4_gu_rows<1, GGML>(blob, gu_row, up_off, n, act + t0, ff + t0, r0, r1); break;
+            case 2: nl4_gu_rows<2, GGML>(blob, gu_row, up_off, n, act + t0, ff + t0, r0, r1); break;
+            case 3: nl4_gu_rows<3, GGML>(blob, gu_row, up_off, n, act + t0, ff + t0, r0, r1); break;
+            default: nl4_gu_rows<4, GGML>(blob, gu_row, up_off, n, act + t0, ff + t0, r0, r1); break;
+        }
+    }
+}
+
 }  // namespace
+
+// The 4-bit codes of the four values of each of the 512 grid entries, for a positive sign: (v + 15) / 2.  A negative
+// value's code is 15 minus that, i.e. the code xor 15.  Empty when a grid value is not an odd 1..15 (it never is in
+// ggml's table; the check is what makes the repack exact by construction rather than by assumption).
+struct Iq3sCodes {
+    uint8_t c[512][4];
+    bool ok = true;
+    Iq3sCodes() {
+        for (int i = 0; i < 512; ++i)
+            for (int e = 0; e < 4; ++e) {
+                const int v = (int) ((iq3s_grid[i] >> (8 * e)) & 0xffu);
+                ok = ok && v >= 1 && v <= 15 && (v & 1) == 1;
+                c[i][e] = (uint8_t) ((v + 15) / 2);
+            }
+    }
+};
+
+bool iq3s_nl4_repack(const uint8_t* src, int nblocks, uint8_t* out) noexcept {
+    static const Iq3sCodes codes;
+    if (!codes.ok) return false;
+    for (int i = 0; i < nblocks; ++i) {
+        const uint8_t* b = src + (size_t) i * 110;   // IQ3_S: d, qs[64], qh[8], signs[32], scales[4]
+        uint8_t* o = out + (size_t) i * kIq3sNl4Block;
+        std::memcpy(o, b, 2);
+        std::memcpy(o + 2, b + 106, 4);
+        uint8_t c[QK_K];
+        for (int j = 0; j < 4; ++j)
+            for (int half = 0; half < 2; ++half) {
+                const uint8_t* q = b + 2 + 16 * j + 8 * half;
+                const uint32_t h = b[66 + 2 * j + half];
+                const uint64_t m = u64(b + 74 + 8 * j);
+                const uint32_t sbits = half ? (uint32_t) (m >> 32) : (uint32_t) m;
+                uint8_t* dst = c + 64 * j + 32 * half;
+                for (int k = 0; k < 8; ++k) {
+                    const uint8_t* g = codes.c[q[k] | (((h >> k) & 1u) << 8)];
+                    for (int e = 0; e < 4; ++e)
+                        dst[4 * k + e] = (uint8_t) (g[e] ^ (((sbits >> (4 * k + e)) & 1u) * 15u));
+                }
+            }
+        for (int j = 0; j < 4; ++j)
+            for (int k = 0; k < 32; ++k)
+                o[6 + 32 * j + k] = (uint8_t) (c[64 * j + k] | (c[64 * j + 32 + k] << 4));
+    }
+    return true;
+}
+
+void iq3s_nl4_gu_rows(const uint8_t* blob, size_t gu_row, size_t up_off, int n, const void* const* act, int nt,
+                      float* const* ff, int r0, int r1, bool ggml_order) {
+    if (ggml_order) nl4_gu_rows_nt<true>(nt, blob, gu_row, up_off, n, act, ff, r0, r1);
+    else            nl4_gu_rows_nt<false>(nt, blob, gu_row, up_off, n, act, ff, r0, r1);
+}
 
 bool iq256_supported(int type) noexcept {
     return type == 16 || type == 17 || type == 18 || type == 21 || type == 22 || type == 23;
