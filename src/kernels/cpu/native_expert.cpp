@@ -93,9 +93,11 @@ void native_gu_rows(const NativeFmt& f, const uint8_t* blob, const void* const* 
     // them.  That path loops over tokens itself, so it is correct for any `nt`, not just one.
     static const bool avx2 = cpu_avx2_ok() && std::getenv("GUILD_NO_IQ256") == nullptr;
     // #152: from how many tokens the multi-token kernels run (ggml's vec_dot below that).  The default 2 is the
-    // measured-fastest rule, but a token's expert rows then round differently alone than in a group, so greedy output
-    // can depend on how many drafts a verify window held.  GUILD_IQ_MT_MIN=1 (opt-in, 0.1.30) uses the multi-token
-    // kernels for every group: output independent of the drafting, at a measured -1..-3% decode on IQ3_S (AVX-512).
+    // measured-fastest rule.  The multi-token kernels now sum a row in ggml-cpu's float order (GUILD_IQ_GGML_ORDER,
+    // iq_avx512.cpp / iq_avx2.cpp), so a token's rows are the same alone or in a group and a verify window computes
+    // what one-token decode does whatever the rule.  With GUILD_IQ_GGML_ORDER=0 (their earlier order) they round
+    // differently from ggml's dot, and GUILD_IQ_MT_MIN=1 (the multi-token kernels for every group, -1..-3% decode on
+    // IQ3_S, AVX-512) is what keeps the output independent of the drafting.
     static const int mt_min = [] { const char* e = std::getenv("GUILD_IQ_MT_MIN"); return e ? std::atoi(e) : 2; }();
     // Q4_K / Q6_K gate/up: the multi-token 2-row fused kernel is bit-exact against ggml's per-token dot (any group
     // size, no #152 rule).  Enabled by default; GUILD_KQ256=0 falls back to ggml-cpu's per-token dot.
@@ -104,7 +106,8 @@ void native_gu_rows(const NativeFmt& f, const uint8_t* blob, const void* const* 
         return cpu_avx2_ok() && (v == nullptr || std::atoi(v) != 0);
     }();
     // IQ3_S rows the host repacked (iq_avx2.hpp): the kernel IQ3_S would have taken, with its rounding - iq256 from
-    // mt_min tokens, ggml-cpu's single-token dot below that.  iq3s_nl4_exact() says when the host may repack.
+    // mt_min tokens (ggml's order unless GUILD_IQ_GGML_ORDER=0), ggml-cpu's single-token dot below that.
+    // iq3s_nl4_exact() says when the host may repack.
     if (f.gu_type == kIq3sNl4Type) {
         iq3s_nl4_gu_rows(blob, f.gu_row, f.up_off, (int) f.n_embd, act, nt, ff, r0, r1, nt < mt_min || !avx2);
         return;
@@ -169,7 +172,9 @@ void native_down_rows(const NativeFmt& f, const uint8_t* blob, const void* const
         kq256_rows(f.d_type, blob + f.down_off, f.d_row, (int) f.n_ff, hq, nt, out, r0, r1);
         return;
     }
-    if (cpu_avx2_ok() && nt >= mt_min && f.d_type == 20 && iq4nl_mt) {   // #152: the same rule as the gate/up rows
+    // #152: the same rule as the gate/up rows.  An even number of 32-value blocks: the kernel's last block of an odd
+    // count is ggml's scalar step, whose float rounding depends on how ggml-cpu was compiled (contracted or not).
+    if (cpu_avx2_ok() && nt >= mt_min && f.d_type == 20 && iq4nl_mt && f.n_ff % 64 == 0) {
         for (int t0 = 0; t0 < nt; t0 += MAXT)
             iq4nl256_down_rows(blob + f.down_off, f.d_row, (int) f.n_ff, hq + t0, (std::min)(MAXT, nt - t0),
                                out + t0, r0, r1);

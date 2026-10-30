@@ -19,6 +19,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
+#include <type_traits>
 
 namespace guild::kernels::cpu {
 namespace {
@@ -37,6 +38,28 @@ const int prefetch_ahead = [] {
     const char* v = std::getenv("GUILD_IQ_PREFETCH");
     return v ? std::atoi(v) : 2048;
 }();
+
+// #152: the float order of a row's sum.  ggml-cpu's dot for these formats (ggml_vec_dot_*_q8_K, the AVX-2 branch of
+// arch/x86/quants.c - it has no AVX-512 one) puts bytes 4l..4l+3 of every 32-value half in int32 lane l (l = 0..7)
+// and adds the halves as integers; per block it does one 8-lane fmadd of d_x * d_y, and at the end one hsum_float_8
+// times the format's constant.  Here a 64-value chunk fills 16 int32 lanes, l from its first half and 8 + l from its
+// second, so lane l plus lane 8 + l is ggml's lane l exactly (integers add exactly) and the float steps can be
+// ggml's: a token's row is then ggml-cpu's single-token dot to the bit, alone or in a group, so a verify window
+// computes what one-token decode computes (ggml-cpu runs the one-token groups: GUILD_IQ_MT_MIN, native_expert.cpp).
+// GUILD_IQ_GGML_ORDER=0 restores the earlier order (16-lane fmadds and one 16-lane reduction), whose rows round
+// differently from ggml-cpu's.
+const bool ggml_order = [] {
+    const char* v = std::getenv("GUILD_IQ_GGML_ORDER");
+    return v == nullptr || std::atoi(v) != 0;
+}();
+
+inline float hsum_ggml(__m256 x) {   // ggml-cpu's hsum_float_8 (arch/x86/quants.c)
+    __m128 res = _mm256_extractf128_ps(x, 1);
+    res = _mm_add_ps(res, _mm256_castps256_ps128(x));
+    res = _mm_add_ps(res, _mm_movehl_ps(res, res));
+    res = _mm_add_ss(res, _mm_movehdup_ps(res));
+    return _mm_cvtss_f32(res);
+}
 
 // lanes 0-7 -> s0, 8-15 -> s1, 16-23 -> s2, 24-31 -> s3 (int16 lanes of a maddubs result: two values each)
 inline __m512i scales4(int s0, int s1, int s2, int s3) {
@@ -152,10 +175,13 @@ template <> struct Fmt<21> {   // IQ3_S: d, qs[64], qh[8], signs[32], scales[4]
     }
 };
 
-template <int TY, int NT>
+template <int TY, int NT, bool GG>
 inline void row_dot(const uint8_t* row, int nblocks, const block_q8_K* const* y, float* res) {
-    __m512 accf[NT];
-    for (int t = 0; t < NT; ++t) accf[t] = _mm512_setzero_ps();
+    std::conditional_t<GG, __m256, __m512> accf[NT];   // GG: ggml's eight lanes
+    for (int t = 0; t < NT; ++t) {
+        if constexpr (GG) accf[t] = _mm256_setzero_ps();
+        else              accf[t] = _mm512_setzero_ps();
+    }
     const __m512i zero = _mm512_setzero_si512();
     for (int i = 0; i < nblocks; ++i) {
         const uint8_t* blk = row + (size_t) i * Fmt<TY>::bytes;
@@ -178,14 +204,26 @@ inline void row_dot(const uint8_t* row, int nblocks, const block_q8_K* const* y,
                 acci[t] = _mm512_add_epi32(acci[t], _mm512_madd_epi16(_mm512_maddubs_epi16(g, ys), sc));
             }
         }
-        const float dx = h2f(u16(blk)) * Fmt<TY>::K;
-        for (int t = 0; t < NT; ++t)
-            accf[t] = _mm512_fmadd_ps(_mm512_set1_ps(dx * y[t][i].d), _mm512_cvtepi32_ps(acci[t]), accf[t]);
+        if constexpr (GG) {
+            const float dx = h2f(u16(blk));   // ggml applies the format's constant to the final sum
+            for (int t = 0; t < NT; ++t) {
+                const __m256i s8 = _mm256_add_epi32(_mm512_castsi512_si256(acci[t]),
+                                                    _mm512_extracti64x4_epi64(acci[t], 1));
+                accf[t] = _mm256_fmadd_ps(_mm256_set1_ps(dx * y[t][i].d), _mm256_cvtepi32_ps(s8), accf[t]);
+            }
+        } else {
+            const float dx = h2f(u16(blk)) * Fmt<TY>::K;
+            for (int t = 0; t < NT; ++t)
+                accf[t] = _mm512_fmadd_ps(_mm512_set1_ps(dx * y[t][i].d), _mm512_cvtepi32_ps(acci[t]), accf[t]);
+        }
     }
-    for (int t = 0; t < NT; ++t) res[t] = _mm512_reduce_add_ps(accf[t]);
+    for (int t = 0; t < NT; ++t) {
+        if constexpr (GG) res[t] = Fmt<TY>::K * hsum_ggml(accf[t]);
+        else              res[t] = _mm512_reduce_add_ps(accf[t]);
+    }
 }
 
-template <int TY, int NT>
+template <int TY, int NT, bool GG>
 void gu_rows(const uint8_t* blob, size_t gu_row, size_t up_off, int n, const void* const* act, float* const* ff,
              int r0, int r1) {
     const block_q8_K* y[NT];
@@ -193,49 +231,49 @@ void gu_rows(const uint8_t* blob, size_t gu_row, size_t up_off, int n, const voi
     const int nb = n / QK_K;
     float g[NT], u[NT];
     for (int r = r0; r < r1; ++r) {
-        row_dot<TY, NT>(blob + (size_t) r * gu_row, nb, y, g);
-        row_dot<TY, NT>(blob + up_off + (size_t) r * gu_row, nb, y, u);
+        row_dot<TY, NT, GG>(blob + (size_t) r * gu_row, nb, y, g);
+        row_dot<TY, NT, GG>(blob + up_off + (size_t) r * gu_row, nb, y, u);
         for (int t = 0; t < NT; ++t) ff[t][r] = (g[t] / (1.f + std::exp(-g[t]))) * u[t];
     }
 }
 
-template <int TY, int NT>
+template <int TY, int NT, bool GG>
 void dot_rows(const uint8_t* w, size_t row_bytes, int n, const void* const* act, float* const* out, int r0, int r1) {
     const block_q8_K* y[NT];
     for (int t = 0; t < NT; ++t) y[t] = (const block_q8_K*) act[t];
     float res[NT];
     for (int r = r0; r < r1; ++r) {
-        row_dot<TY, NT>(w + (size_t) r * row_bytes, n / QK_K, y, res);
+        row_dot<TY, NT, GG>(w + (size_t) r * row_bytes, n / QK_K, y, res);
         for (int t = 0; t < NT; ++t) out[t][r] = res[t];
     }
 }
 
-template <int TY>
+template <int TY, bool GG>
 void gu_rows_nt(int nt, const uint8_t* blob, size_t gu_row, size_t up_off, int n, const void* const* act,
                 float* const* ff, int r0, int r1) {
     switch (nt) {
-        case 1: gu_rows<TY, 1>(blob, gu_row, up_off, n, act, ff, r0, r1); break;
-        case 2: gu_rows<TY, 2>(blob, gu_row, up_off, n, act, ff, r0, r1); break;
-        case 3: gu_rows<TY, 3>(blob, gu_row, up_off, n, act, ff, r0, r1); break;
-        case 4: gu_rows<TY, 4>(blob, gu_row, up_off, n, act, ff, r0, r1); break;
-        case 5: gu_rows<TY, 5>(blob, gu_row, up_off, n, act, ff, r0, r1); break;
-        case 6: gu_rows<TY, 6>(blob, gu_row, up_off, n, act, ff, r0, r1); break;
-        case 7: gu_rows<TY, 7>(blob, gu_row, up_off, n, act, ff, r0, r1); break;
-        default: gu_rows<TY, 8>(blob, gu_row, up_off, n, act, ff, r0, r1); break;
+        case 1: gu_rows<TY, 1, GG>(blob, gu_row, up_off, n, act, ff, r0, r1); break;
+        case 2: gu_rows<TY, 2, GG>(blob, gu_row, up_off, n, act, ff, r0, r1); break;
+        case 3: gu_rows<TY, 3, GG>(blob, gu_row, up_off, n, act, ff, r0, r1); break;
+        case 4: gu_rows<TY, 4, GG>(blob, gu_row, up_off, n, act, ff, r0, r1); break;
+        case 5: gu_rows<TY, 5, GG>(blob, gu_row, up_off, n, act, ff, r0, r1); break;
+        case 6: gu_rows<TY, 6, GG>(blob, gu_row, up_off, n, act, ff, r0, r1); break;
+        case 7: gu_rows<TY, 7, GG>(blob, gu_row, up_off, n, act, ff, r0, r1); break;
+        default: gu_rows<TY, 8, GG>(blob, gu_row, up_off, n, act, ff, r0, r1); break;
     }
 }
 
-template <int TY>
+template <int TY, bool GG>
 void dot_rows_nt(int nt, const uint8_t* w, size_t row_bytes, int n, const void* const* act, float* const* out, int r0,
                  int r1) {
     switch (nt) {
-        case 1: dot_rows<TY, 1>(w, row_bytes, n, act, out, r0, r1); break;
-        case 2: dot_rows<TY, 2>(w, row_bytes, n, act, out, r0, r1); break;
-        case 3: dot_rows<TY, 3>(w, row_bytes, n, act, out, r0, r1); break;
-        case 4: dot_rows<TY, 4>(w, row_bytes, n, act, out, r0, r1); break;
+        case 1: dot_rows<TY, 1, GG>(w, row_bytes, n, act, out, r0, r1); break;
+        case 2: dot_rows<TY, 2, GG>(w, row_bytes, n, act, out, r0, r1); break;
+        case 3: dot_rows<TY, 3, GG>(w, row_bytes, n, act, out, r0, r1); break;
+        case 4: dot_rows<TY, 4, GG>(w, row_bytes, n, act, out, r0, r1); break;
         default: for (int t0 = 0; t0 < nt; t0 += 4) {
             const int k = nt - t0 < 4 ? nt - t0 : 4;
-            dot_rows_nt<TY>(k, w, row_bytes, n, act + t0, out + t0, r0, r1);
+            dot_rows_nt<TY, GG>(k, w, row_bytes, n, act + t0, out + t0, r0, r1);
         }
     }
 }
@@ -248,24 +286,46 @@ bool iq512_supported(int type) noexcept {
 
 void iq512_gu_rows(int type, const uint8_t* blob, size_t gu_row, size_t up_off, int n, const void* const* act, int nt,
                    float* const* ff, int r0, int r1) {
+    if (ggml_order) {
+        switch (type) {
+            case 16: gu_rows_nt<16, true>(nt, blob, gu_row, up_off, n, act, ff, r0, r1); break;
+            case 17: gu_rows_nt<17, true>(nt, blob, gu_row, up_off, n, act, ff, r0, r1); break;
+            case 18: gu_rows_nt<18, true>(nt, blob, gu_row, up_off, n, act, ff, r0, r1); break;
+            case 21: gu_rows_nt<21, true>(nt, blob, gu_row, up_off, n, act, ff, r0, r1); break;
+            case 22: gu_rows_nt<22, true>(nt, blob, gu_row, up_off, n, act, ff, r0, r1); break;
+            default: break;
+        }
+        return;
+    }
     switch (type) {
-        case 16: gu_rows_nt<16>(nt, blob, gu_row, up_off, n, act, ff, r0, r1); break;
-        case 17: gu_rows_nt<17>(nt, blob, gu_row, up_off, n, act, ff, r0, r1); break;
-        case 18: gu_rows_nt<18>(nt, blob, gu_row, up_off, n, act, ff, r0, r1); break;
-        case 21: gu_rows_nt<21>(nt, blob, gu_row, up_off, n, act, ff, r0, r1); break;
-        case 22: gu_rows_nt<22>(nt, blob, gu_row, up_off, n, act, ff, r0, r1); break;
+        case 16: gu_rows_nt<16, false>(nt, blob, gu_row, up_off, n, act, ff, r0, r1); break;
+        case 17: gu_rows_nt<17, false>(nt, blob, gu_row, up_off, n, act, ff, r0, r1); break;
+        case 18: gu_rows_nt<18, false>(nt, blob, gu_row, up_off, n, act, ff, r0, r1); break;
+        case 21: gu_rows_nt<21, false>(nt, blob, gu_row, up_off, n, act, ff, r0, r1); break;
+        case 22: gu_rows_nt<22, false>(nt, blob, gu_row, up_off, n, act, ff, r0, r1); break;
         default: break;
     }
 }
 
 void iq512_rows(int type, const uint8_t* w, size_t row_bytes, int n, const void* const* act, int nt, float* const* out,
                 int r0, int r1) {
+    if (ggml_order) {
+        switch (type) {
+            case 16: dot_rows_nt<16, true>(nt, w, row_bytes, n, act, out, r0, r1); break;
+            case 17: dot_rows_nt<17, true>(nt, w, row_bytes, n, act, out, r0, r1); break;
+            case 18: dot_rows_nt<18, true>(nt, w, row_bytes, n, act, out, r0, r1); break;
+            case 21: dot_rows_nt<21, true>(nt, w, row_bytes, n, act, out, r0, r1); break;
+            case 22: dot_rows_nt<22, true>(nt, w, row_bytes, n, act, out, r0, r1); break;
+            default: break;
+        }
+        return;
+    }
     switch (type) {
-        case 16: dot_rows_nt<16>(nt, w, row_bytes, n, act, out, r0, r1); break;
-        case 17: dot_rows_nt<17>(nt, w, row_bytes, n, act, out, r0, r1); break;
-        case 18: dot_rows_nt<18>(nt, w, row_bytes, n, act, out, r0, r1); break;
-        case 21: dot_rows_nt<21>(nt, w, row_bytes, n, act, out, r0, r1); break;
-        case 22: dot_rows_nt<22>(nt, w, row_bytes, n, act, out, r0, r1); break;
+        case 16: dot_rows_nt<16, false>(nt, w, row_bytes, n, act, out, r0, r1); break;
+        case 17: dot_rows_nt<17, false>(nt, w, row_bytes, n, act, out, r0, r1); break;
+        case 18: dot_rows_nt<18, false>(nt, w, row_bytes, n, act, out, r0, r1); break;
+        case 21: dot_rows_nt<21, false>(nt, w, row_bytes, n, act, out, r0, r1); break;
+        case 22: dot_rows_nt<22, false>(nt, w, row_bytes, n, act, out, r0, r1); break;
         default: break;
     }
 }
