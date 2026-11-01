@@ -21,6 +21,7 @@
 #include <immintrin.h>
 
 #include <cmath>
+#include <cstdlib>
 #include <cstring>
 
 namespace guild::kernels::cpu {
@@ -791,6 +792,98 @@ void q8_0_dot(const block_q8_0* x, int nb, const void* const* act, int nt, float
     for (int t = 0; t < nt; ++t) res[t] = hsum_float_8(acc[t]);
 }
 
+// ---- Q8_0 x Q8_0, two rows at once on AVX-512BW: row x0's 8 lanes in the low 256 bits of a register, x1's in the
+// high, every lane computed as q8_0_dot above computes it (|x| . (y signed by x) by maddubs and madd with ones,
+// fma(x.d * y.d, q, acc), hsum_float_8 at the end), so each (row, token) is ggml's to the bit.  AVX-512 has no
+// vpsignb: y is negated where x < 0 instead, which changes no integer sum (where x is 0 the product is 0 either way).
+// yd: the tokens' block scales as floats, block by block ([nb][NT], one pointer for every token).  pf0, pf1: rows to
+// ask for while these two are read - the next ones, as the DRAM stream (2x Xeon Gold 6130, every core streaming its
+// own rows, one token: 187 GB/s without, 215 with).
+constexpr int kQ8MaxBlocks = 128; // the Q8_0 rows of up to 4,096 values (kNativeActBytes holds 3,840)
+
+template <int NT>
+__attribute__((target("avx512f,avx512bw,avx512dq,avx512vl,fma,f16c")))
+void q8_0_2rows_avx512bw_nt(const block_q8_0* x0, const block_q8_0* x1, int nb, const void* const* act,
+                            const float* yd, const char* pf0, const char* pf1, float* res0, float* res1) {
+    const block_q8_0* y[NT];
+    for (int t = 0; t < NT; ++t) y[t] = (const block_q8_0*) act[t];
+    __m512 acc[NT];
+    for (int t = 0; t < NT; ++t) acc[t] = _mm512_setzero_ps();
+    const __m512i ones = _mm512_set1_epi16(1), zero = _mm512_setzero_si512();
+    for (int ib = 0; ib < nb; ++ib, yd += NT) {
+        _mm_prefetch(pf0 + (size_t) ib * sizeof(block_q8_0), _MM_HINT_T0);
+        _mm_prefetch(pf1 + (size_t) ib * sizeof(block_q8_0), _MM_HINT_T0);
+        const __m512i qx = _mm512_inserti64x4(_mm512_castsi256_si512(_mm256_loadu_si256((const __m256i*) x0[ib].qs)),
+                                              _mm256_loadu_si256((const __m256i*) x1[ib].qs), 1);
+        const __m512i ax = _mm512_abs_epi8(qx);
+        const __mmask64 neg = _mm512_movepi8_mask(qx);
+        const __m512 xd = _mm512_insertf32x8(_mm512_set1_ps(h2f(x0[ib].d)), _mm256_set1_ps(h2f(x1[ib].d)), 1);
+        for (int t = 0; t < NT; ++t) {
+            const __m512i qy = _mm512_broadcast_i64x4(_mm256_loadu_si256((const __m256i*) y[t][ib].qs));
+            const __m512i sy = _mm512_mask_sub_epi8(qy, neg, zero, qy);
+            const __m512 q = _mm512_cvtepi32_ps(_mm512_madd_epi16(ones, _mm512_maddubs_epi16(ax, sy)));
+            acc[t] = _mm512_fmadd_ps(_mm512_mul_ps(xd, _mm512_set1_ps(yd[t])), q, acc[t]);
+        }
+    }
+    for (int t = 0; t < NT; ++t) {
+        res0[t] = hsum_float_8(_mm512_castps512_ps256(acc[t]));
+        res1[t] = hsum_float_8(_mm512_extractf32x8_ps(acc[t], 1));
+    }
+}
+
+/// Q8_0 rows on AVX-512BW, `nt` tokens (MAXT at a time): rows r, r + 1 together (`gu`: gate row r with up row r, and
+/// ff = silu(g) * u), each token's block scales converted once a call
+void q8_0_rows_avx512bw(const uint8_t* w, size_t row_bytes, size_t up_off, bool gu, int n, const void* const* act,
+                        int nt, float* const* out, int r0, int r1) {
+    const int nb = n / QK8_0;
+    for (int t0 = 0; t0 < nt; t0 += MAXT) {
+        const int m = nt - t0 < MAXT ? nt - t0 : MAXT;
+        float yd[kQ8MaxBlocks * MAXT];
+        for (int t = 0; t < m; ++t)
+            for (int ib = 0; ib < nb; ++ib) yd[ib * m + t] = h2f(((const block_q8_0*) act[t0 + t])[ib].d);
+        // the next rows of each stream, two ahead (past r1: the caller's next rows, or nothing it reads)
+        for (int r = r0; r < r1; r += gu ? 1 : 2) {
+            const uint8_t* w0 = w + (size_t) r * row_bytes;
+            const uint8_t* w1 = gu ? w0 + up_off : (r + 1 < r1 ? w0 + row_bytes : w0);
+            const char* pf0 = (const char*) w0 + 2 * row_bytes;
+            const char* pf1 = (const char*) w1 + 2 * row_bytes;
+            float a[MAXT], b[MAXT];
+            const block_q8_0 *x0 = (const block_q8_0*) w0, *x1 = (const block_q8_0*) w1;
+            switch (m) {
+                case 1: q8_0_2rows_avx512bw_nt<1>(x0, x1, nb, act + t0, yd, pf0, pf1, a, b); break;
+                case 2: q8_0_2rows_avx512bw_nt<2>(x0, x1, nb, act + t0, yd, pf0, pf1, a, b); break;
+                case 3: q8_0_2rows_avx512bw_nt<3>(x0, x1, nb, act + t0, yd, pf0, pf1, a, b); break;
+                case 4: q8_0_2rows_avx512bw_nt<4>(x0, x1, nb, act + t0, yd, pf0, pf1, a, b); break;
+                case 5: q8_0_2rows_avx512bw_nt<5>(x0, x1, nb, act + t0, yd, pf0, pf1, a, b); break;
+                case 6: q8_0_2rows_avx512bw_nt<6>(x0, x1, nb, act + t0, yd, pf0, pf1, a, b); break;
+                case 7: q8_0_2rows_avx512bw_nt<7>(x0, x1, nb, act + t0, yd, pf0, pf1, a, b); break;
+                default: q8_0_2rows_avx512bw_nt<8>(x0, x1, nb, act + t0, yd, pf0, pf1, a, b); break;
+            }
+            for (int t = 0; t < m; ++t) {
+                if (gu) {
+                    // native_gu_rows' own SwiGLU expression: the same bits as the per-token ggml path
+                    out[t0 + t][r] = (a[t] / (1.f + std::exp(-a[t]))) * b[t];
+                } else {
+                    out[t0 + t][r] = a[t];
+                    if (r + 1 < r1) out[t0 + t][r + 1] = b[t];
+                }
+            }
+        }
+    }
+}
+
+}  // namespace
+
+bool kq512_rows(int type, int n) noexcept {
+    static const bool on = [] {
+        const char* v = std::getenv("GUILD_Q8_512");
+        return cpu_avx512bw_ok() && (v == nullptr || std::atoi(v) != 0);
+    }();
+    return on && type == 8 && n % QK8_0 == 0 && n / QK8_0 <= kQ8MaxBlocks;
+}
+
+namespace {
+
 void dot_rows(int type, const uint8_t* row, int n, const void* const* act, int nt, float* res) {
     switch (type) {
         case 12: q4k_dot((const block_q4_K*) row, n / QK_K, act, nt, res); break;
@@ -854,6 +947,10 @@ void bf16_rows_dot(const uint16_t* w, int rows, int cols, const float* x, float*
 
 void kq256_gu_rows(int type, const uint8_t* blob, size_t gu_row, size_t up_off, int n, const void* const* act, int nt,
                    float* const* ff, int r0, int r1) {
+    if (kq512_rows(type, n)) {
+        q8_0_rows_avx512bw(blob, gu_row, up_off, true, n, act, nt, ff, r0, r1);
+        return;
+    }
     for (int r = r0; r < r1; ++r) {
         const uint8_t* gr = blob + (size_t) r * gu_row;
         const uint8_t* ur = blob + up_off + (size_t) r * gu_row;
@@ -869,6 +966,10 @@ void kq256_gu_rows(int type, const uint8_t* blob, size_t gu_row, size_t up_off, 
 
 void kq256_rows(int type, const uint8_t* w, size_t row_bytes, int n, const void* const* act, int nt, float* const* out,
                 int r0, int r1) {
+    if (kq512_rows(type, n)) {
+        q8_0_rows_avx512bw(w, row_bytes, 0, false, n, act, nt, out, r0, r1);
+        return;
+    }
     int r = r0;
     for (; r + 2 <= r1; r += 2) {
         const uint8_t* w0 = w + (size_t) r * row_bytes;

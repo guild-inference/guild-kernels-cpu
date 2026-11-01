@@ -7,6 +7,7 @@
 #include "guild/kernels/cpu/features.hpp"
 #include "guild/kernels/cpu/iq_avx2.hpp"
 #include "guild/kernels/cpu/iq_avx512.hpp"
+#include "guild/kernels/cpu/kq_avx2.hpp"
 #include "guild/kernels/cpu/native_expert.hpp"
 #include "ggml.h"
 #include "ggml-cpu.h"
@@ -176,6 +177,11 @@ int main() {
         if (iq256_supported(type)) differ += check_iq(type, "avx2", iq256_rows, iq256_gu_rows);
     }
     for (int n : {512, 640, 768}) differ += check_iq4nl(n);
+    // Q8_0 rows (kq_avx2.cpp): two rows to an AVX-512BW register where the CPU has it (GUILD_Q8_512=0: the AVX-2
+    // kernel), one token or several, against ggml's dot; then the dispatch of Q8_0 experts
+    differ += check_iq(GGML_TYPE_Q8_0, kq512_rows(GGML_TYPE_Q8_0, 1024) ? "avx512bw" : "avx2", kq256_rows,
+                       kq256_gu_rows);
+    differ += check_dispatch(GGML_TYPE_Q8_0, GGML_TYPE_Q8_0, 1024, 512);
     // the formats of the shipped IQ packs: IQ3_S or IQ4_XS gate/up with IQ4_NL or Q8_0 down rows
     differ += check_dispatch(GGML_TYPE_IQ3_S, GGML_TYPE_IQ4_NL, 1024, 512);
     differ += check_dispatch(GGML_TYPE_IQ3_S, GGML_TYPE_Q8_0, 1024, 512);

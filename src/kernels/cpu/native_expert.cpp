@@ -116,6 +116,12 @@ void native_gu_rows(const NativeFmt& f, const uint8_t* blob, const void* const* 
         kq256_gu_rows(f.gu_type, blob, f.gu_row, f.up_off, (int) f.n_embd, act, nt, ff, r0, r1);
         return;
     }
+    // Q8_0 gate/up: the same family's AVX-512BW rows (bit-exact the same way), for any number of tokens; two tokens
+    // read each row once instead of twice, and one is no slower than ggml's dot (kq512_rows)
+    if (kq && f.gu_type == 8 && kq512_rows(8, (int) f.n_embd)) {
+        kq256_gu_rows(8, blob, f.gu_row, f.up_off, (int) f.n_embd, act, nt, ff, r0, r1);
+        return;
+    }
     // A format with only an AVX-2 kernel (IQ4_XS, #415) takes it on AVX-2 CPUs only: an AVX-512 CPU keeps ggml-cpu for
     // it, as before (its rows would round differently).  Each kernel only for the formats it implements: falling
     // through an empty switch would leave ff unwritten instead of falling back to ggml-cpu.
@@ -168,7 +174,7 @@ void native_down_rows(const NativeFmt& f, const uint8_t* blob, const void* const
     // Both multi-token kernels below are /arch:AVX2 translation units (kq_avx2.cpp and iq_avx2.cpp),
     // so a CPU without AVX2 has to reach ggml-cpu's vec_dot instead - same reasoning as the gate/up
     // rows above, where `avx512` tested cpu_avx512_ok() and `avx2` did not.
-    if (kq && nt >= 2 && kq256_supported(f.d_type)) {
+    if (kq && (nt >= 2 || kq512_rows(f.d_type, (int) f.n_ff)) && kq256_supported(f.d_type)) {
         kq256_rows(f.d_type, blob + f.down_off, f.d_row, (int) f.n_ff, hq, nt, out, r0, r1);
         return;
     }
