@@ -792,6 +792,7 @@ void q8_0_dot(const block_q8_0* x, int nb, const void* const* act, int nt, float
     for (int t = 0; t < nt; ++t) res[t] = hsum_float_8(acc[t]);
 }
 
+#if defined(__GNUC__) || defined(__clang__)
 // ---- Q8_0 x Q8_0, two rows at once on AVX-512BW: row x0's 8 lanes in the low 256 bits of a register, x1's in the
 // high, every lane computed as q8_0_dot above computes it (|x| . (y signed by x) by maddubs and madd with ones,
 // fma(x.d * y.d, q, acc), hsum_float_8 at the end), so each (row, token) is ggml's to the bit.  AVX-512 has no
@@ -871,15 +872,23 @@ void q8_0_rows_avx512bw(const uint8_t* w, size_t row_bytes, size_t up_off, bool 
         }
     }
 }
+#endif
 
 }  // namespace
 
 bool kq512_rows(int type, int n) noexcept {
+#if defined(__GNUC__) || defined(__clang__)
     static const bool on = [] {
         const char* v = std::getenv("GUILD_Q8_512");
         return cpu_avx512bw_ok() && (v == nullptr || std::atoi(v) != 0);
     }();
     return on && type == 8 && n % QK8_0 == 0 && n / QK8_0 <= kQ8MaxBlocks;
+#else
+    // the AVX-512 rows need GCC's or Clang's target attribute, as the K-quant ones above do: AVX2 rows here
+    (void) type;
+    (void) n;
+    return false;
+#endif
 }
 
 namespace {
@@ -947,10 +956,12 @@ void bf16_rows_dot(const uint16_t* w, int rows, int cols, const float* x, float*
 
 void kq256_gu_rows(int type, const uint8_t* blob, size_t gu_row, size_t up_off, int n, const void* const* act, int nt,
                    float* const* ff, int r0, int r1) {
+#if defined(__GNUC__) || defined(__clang__)
     if (kq512_rows(type, n)) {
         q8_0_rows_avx512bw(blob, gu_row, up_off, true, n, act, nt, ff, r0, r1);
         return;
     }
+#endif
     for (int r = r0; r < r1; ++r) {
         const uint8_t* gr = blob + (size_t) r * gu_row;
         const uint8_t* ur = blob + up_off + (size_t) r * gu_row;
@@ -966,10 +977,12 @@ void kq256_gu_rows(int type, const uint8_t* blob, size_t gu_row, size_t up_off, 
 
 void kq256_rows(int type, const uint8_t* w, size_t row_bytes, int n, const void* const* act, int nt, float* const* out,
                 int r0, int r1) {
+#if defined(__GNUC__) || defined(__clang__)
     if (kq512_rows(type, n)) {
         q8_0_rows_avx512bw(w, row_bytes, 0, false, n, act, nt, out, r0, r1);
         return;
     }
+#endif
     int r = r0;
     for (; r + 2 <= r1; r += 2) {
         const uint8_t* w0 = w + (size_t) r * row_bytes;
